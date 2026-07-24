@@ -71,6 +71,15 @@ class TestScoreRow(unittest.TestCase):
         self.assertGreaterEqual(score, 40)
         self.assertTrue(any("SEC 공시" in r for r in reasons))
 
+    def test_sec_item_2_01_scores_higher_than_no_item(self):
+        base = {"keyword": "reverse merger", "form": "8-K", "file_date": "2026-01-01"}
+        sec_hits_plain = {"TEST": [dict(base)]}
+        sec_hits_item = {"TEST": [dict(base, items=["2.01"])]}
+        score_plain, _ = screener.score_row(self._row(), sec_hits_plain, {}, {})
+        score_item, reasons_item = screener.score_row(self._row(), sec_hits_item, {}, {})
+        self.assertGreater(score_item, score_plain)
+        self.assertTrue(any("Item 2.01" in r for r in reasons_item))
+
     def test_positive_news_increases_score(self):
         news_hits = {"TEST": [{"title": "Company to acquire TEST in all-cash premium deal",
                                 "catalyst_prob": 80, "catalyst_label": "호재 가능성 높음", "link": None}]}

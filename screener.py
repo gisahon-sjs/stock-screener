@@ -69,7 +69,18 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
         score += 40 + min(15, 5 * (len(sec_records) - 1))
         kws = sorted(set(r["keyword"] for r in sec_records))
         kws_kr = [KEYWORD_KR.get(k, k) for k in kws]
-        reasons.append(f"SEC 공시: {', '.join(kws_kr)} ({sec_records[0]['form']}, {sec_records[0]['file_date']})")
+
+        all_items = sorted({it for r in sec_records for it in (r.get("items") or [])})
+        best_item = max((it for it in all_items if it in sec_signals.ITEM_WEIGHTS),
+                         key=lambda it: sec_signals.ITEM_WEIGHTS[it], default=None)
+        item_note = ""
+        if best_item:
+            item_add = sec_signals.ITEM_WEIGHTS[best_item]
+            score += item_add
+            item_note = f" [Item {best_item} - {sec_signals.ITEM_LABELS_KR.get(best_item, '')}]"
+
+        reasons.append(
+            f"SEC 공시: {', '.join(kws_kr)} ({sec_records[0]['form']}, {sec_records[0]['file_date']}){item_note}")
 
     news_articles = news_hits.get(row["symbol"])
     if news_articles:
@@ -111,6 +122,50 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
     return round(max(0.0, score), 1), reasons
 
 
+def find_base_symbol(symbol, security_type, all_symbols):
+    """Heuristically strip the Nasdaq security-class suffix (W/WW/R/U) to find
+    the underlying common-stock ticker, verified against the known universe."""
+    if security_type == "Common" or not symbol:
+        return symbol
+    for strip_len in (1, 2):
+        candidate = symbol[:-strip_len]
+        if candidate and candidate in all_symbols:
+            return candidate
+    return symbol
+
+
+def update_score_history(out_dir, prefix, candidates, now_iso, retention_days=60):
+    """Append this run's scores to a rolling per-symbol history file and return
+    a trimmed {symbol: [{t, s}, ...]} map for symbols in this run (dashboard sparklines)."""
+    import os
+    path = f"{out_dir}/history_{prefix}.json"
+    history = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            history = {}
+
+    for _, row in candidates.iterrows():
+        if row["score"] > 0:
+            history.setdefault(row["symbol"], []).append(
+                {"t": now_iso, "s": row["score"], "p": row.get("price")})
+
+    cutoff = datetime.datetime.fromisoformat(now_iso.rstrip("Z")) - datetime.timedelta(days=retention_days)
+    trimmed = {}
+    for sym, points in history.items():
+        kept = [p for p in points if datetime.datetime.fromisoformat(p["t"].rstrip("Z")) >= cutoff]
+        if kept:
+            trimmed[sym] = kept
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(trimmed, f, ensure_ascii=False)
+
+    return trimmed
+
+
 def _load_previous_scored_symbols(out_dir, prefix):
     """Read the previous run's output (if any) to detect newly-appeared candidates."""
     import os
@@ -131,6 +186,11 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     uni = universe.fetch_nasdaq_universe()
     candidates = universe.filter_sub_dollar_smallcap(uni, max_price, max_market_cap)
     print(f"      {len(uni)} total symbols -> {len(candidates)} sub-${max_price} small-cap candidates")
+
+    all_symbols = set(uni["symbol"])
+    uni_lookup = uni.set_index("symbol")[["name", "price", "security_type"]].to_dict(orient="index")
+    candidates["base_symbol"] = candidates.apply(
+        lambda r: find_base_symbol(r["symbol"], r["security_type"], all_symbols), axis=1)
 
     print("[2/6] Fetching volume/price history (spike detection) ...")
     vol_signals = market_signals.bulk_volume_signals(candidates["symbol"].tolist())
@@ -162,6 +222,31 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     candidates["news"] = candidates["symbol"].map(lambda t: news_hits.get(t, []))
     candidates["is_new"] = candidates.apply(
         lambda r: bool(r["score"] > 0 and r["symbol"] not in previously_scored), axis=1)
+
+    by_symbol = candidates.set_index("symbol")[["security_type", "price", "score", "base_symbol"]].to_dict(orient="index")
+
+    def _related(sym):
+        base = by_symbol[sym]["base_symbol"]
+        siblings = [{"symbol": s, "security_type": v["security_type"], "price": v["price"], "score": v["score"]}
+                    for s, v in by_symbol.items() if v["base_symbol"] == base and s != sym]
+        return siblings
+
+    def _underlying(row):
+        if row["security_type"] == "Common" or row["base_symbol"] == row["symbol"]:
+            return None
+        info = uni_lookup.get(row["base_symbol"])
+        if not info:
+            return None
+        return {"symbol": row["base_symbol"], "name": info["name"], "price": info["price"],
+                "in_candidates": row["base_symbol"] in by_symbol}
+
+    candidates["related"] = candidates["symbol"].map(_related)
+    candidates["underlying"] = candidates.apply(_underlying, axis=1)
+
+    generated_at = datetime.datetime.utcnow().isoformat() + "Z"
+    history = update_score_history(out_dir, prefix, candidates, generated_at)
+    candidates["score_history"] = candidates["symbol"].map(lambda t: history.get(t, []))
+
     candidates = candidates.sort_values("score", ascending=False).reset_index(drop=True)
 
     import os
@@ -169,7 +254,7 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     candidates.to_csv(f"{out_dir}/{prefix}.csv", index=False)
 
     payload = {
-        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "generated_at": generated_at,
         "filters": {"max_price": max_price, "max_market_cap": max_market_cap},
         "total_universe": len(uni),
         "total_candidates": len(candidates),

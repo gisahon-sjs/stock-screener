@@ -16,6 +16,24 @@ MERGER_FORMS = "8-K,S-4,425,DEFM14A,PREM14A"
 
 TICKER_RE = re.compile(r"\(([A-Z][A-Z.\-]{0,6})\)")
 
+# 8-K item codes, ranked by how directly they signal an active/completed M&A
+# event (vs. generic/administrative items). Used to sharpen scoring precision
+# beyond plain keyword matches.
+ITEM_LABELS_KR = {
+    "2.01": "인수/자산취득 완료",
+    "1.01": "중요 계약 체결",
+    "5.01": "지배권 변경",
+    "3.01": "상장폐지/요건미달 통지",
+    "8.01": "기타 사항",
+}
+ITEM_WEIGHTS = {
+    "2.01": 15,
+    "1.01": 10,
+    "5.01": 8,
+    "3.01": 3,
+    "8.01": 2,
+}
+
 
 def _extract_ticker(display_names):
     for name in display_names:
@@ -64,6 +82,7 @@ def search_merger_filings(days_back=30, keywords=None, forms=MERGER_FORMS, pause
                 "file_date": src.get("file_date"),
                 "company": display_names[0] if display_names else None,
                 "url": url,
+                "items": src.get("items", []),
             })
         time.sleep(pause)
 

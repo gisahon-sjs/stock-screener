@@ -21,6 +21,11 @@
               background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top:0; z-index: 5;}
   .controls input, .controls select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
               border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  .controls button { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+              border-radius: 999px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+  .controls button:hover { border-color: var(--accent); }
+  .controls button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #resetPresets { color: var(--muted); }
   .controls label { font-size: 12px; color: var(--muted); display:flex; flex-direction:column; gap:4px; }
   .stat { font-size: 12px; color: var(--muted); margin-left: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -73,6 +78,13 @@
   </label>
   <span class="stat" id="stat"></span>
 </div>
+<div class="controls" style="padding-top:0">
+  <button type="button" class="preset-btn" data-preset="sec">SEC 공시만</button>
+  <button type="button" class="preset-btn" data-preset="lowfloat">저플로트만</button>
+  <button type="button" class="preset-btn" data-preset="high">고득점(≥60)</button>
+  <button type="button" class="preset-btn" data-preset="new">신규만</button>
+  <button type="button" id="resetPresets">필터 초기화</button>
+</div>
 <table>
   <thead>
     <tr>
@@ -85,6 +97,7 @@
       <th data-k="float_shares">유통주식수</th>
       <th data-k="market_cap">시가총액</th>
       <th data-k="score">점수</th>
+      <th>추이</th>
       <th>뉴스</th>
     </tr>
   </thead>
@@ -116,12 +129,30 @@ function fmtMoney(x) {
   if (x === null || x === undefined || isNaN(x)) return "-";
   return krCount(x) + " 달러";
 }
+function sparkline(points) {
+  if (!points || points.length < 2) return "";
+  const scores = points.map(p => p.s);
+  const min = Math.min(...scores, 0), max = Math.max(...scores, 1);
+  const w = 90, h = 22, n = points.length;
+  const xy = (i, s) => [
+    (n === 1 ? w / 2 : (i / (n - 1)) * w).toFixed(1),
+    (h - ((s - min) / (max - min || 1)) * h).toFixed(1),
+  ];
+  const path = points.map((p, i) => xy(i, p.s).join(",")).join(" ");
+  const last = points[points.length - 1].s;
+  const color = last >= 60 ? "var(--hot)" : last >= 30 ? "var(--warn)" : "var(--accent)";
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle" title="점수 추이 (${points.length}개 시점)">
+    <polyline points="${path}" fill="none" stroke="${color}" stroke-width="1.5"/>
+  </svg>`;
+}
 function scoreClass(s) {
   if (s >= 60) return "score-hot";
   if (s >= 30) return "score-warm";
   if (s > 0) return "score-mild";
   return "";
 }
+
+const activePresets = new Set();
 
 function render() {
   const q = document.getElementById('q').value.trim().toLowerCase();
@@ -134,6 +165,10 @@ function render() {
     if (secType && r.security_type !== secType) return false;
     if (onlyHits && !(r.score > 0)) return false;
     if (r.score < minScore) return false;
+    if (activePresets.has("sec") && !(r.reasons||[]).some(x => x.startsWith("SEC 공시"))) return false;
+    if (activePresets.has("lowfloat") && !(r.float_shares && r.float_shares < 20_000_000)) return false;
+    if (activePresets.has("high") && !(r.score >= 60)) return false;
+    if (activePresets.has("new") && !r.is_new) return false;
     return true;
   });
 
@@ -160,9 +195,19 @@ function render() {
       return `<div>· <span class="score-pill ${cls}">${a.catalyst_label} ${p}%</span> ${link}</div>`;
     }).join("");
     const reasons = newsHtml + otherReasons;
+    const relatedBits = [];
+    if (r.underlying) {
+      const u = r.underlying;
+      relatedBits.push(`기초증권: <a href="https://finance.yahoo.com/quote/${u.symbol}" target="_blank">${u.symbol}</a> $${fmtNum(u.price,4)}${u.in_candidates ? '' : ' (목록 밖)'}`);
+    }
+    if (r.related && r.related.length) {
+      const sibs = r.related.map(s => `<a href="https://finance.yahoo.com/quote/${s.symbol}" target="_blank">${s.symbol}</a>(${s.security_type})`).join(", ");
+      relatedBits.push(`관련 증권: ${sibs}`);
+    }
+    const relatedHtml = relatedBits.length ? `<div class="reasons" style="margin-top:2px">${relatedBits.join(" · ")}</div>` : "";
     return `<tr>
       <td class="sym"><a href="https://finance.yahoo.com/quote/${r.symbol}" target="_blank">${r.symbol}</a>${r.is_new ? ' <span class="tag" style="color:var(--hot);border-color:var(--hot)">NEW</span>' : ''}</td>
-      <td>${r.name || ""}</td>
+      <td>${r.name || ""}${relatedHtml}</td>
       <td><span class="tag">${r.security_type || ""}</span></td>
       <td>$${fmtNum(r.price, 4)}</td>
       <td class="${chgCls}">${chg !== null && chg !== undefined ? chg.toFixed(1)+"%" : "-"}</td>
@@ -170,6 +215,7 @@ function render() {
       <td>${r.float_shares ? krCount(r.float_shares)+"주" : "-"}</td>
       <td>${fmtMoney(r.market_cap)}</td>
       <td><span class="score-pill ${scoreClass(r.score)}">${r.score}</span></td>
+      <td>${sparkline(r.score_history)}</td>
       <td class="reasons">${reasons}</td>
     </tr>`;
   }).join("");
@@ -184,6 +230,24 @@ document.querySelectorAll('thead th[data-k]').forEach(th => {
 });
 ['q','minScore','secType','onlyHits'].forEach(id =>
   document.getElementById(id).addEventListener('input', render));
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const p = btn.dataset.preset;
+    if (activePresets.has(p)) { activePresets.delete(p); btn.classList.remove('active'); }
+    else { activePresets.add(p); btn.classList.add('active'); }
+    render();
+  });
+});
+document.getElementById('resetPresets').addEventListener('click', () => {
+  activePresets.clear();
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('q').value = '';
+  document.getElementById('minScore').value = '0';
+  document.getElementById('secType').value = '';
+  document.getElementById('onlyHits').value = '1';
+  render();
+});
 
 let lastGeneratedAt = null;
 const REFRESH_MS = 30000;
