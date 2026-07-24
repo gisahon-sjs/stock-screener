@@ -100,11 +100,21 @@ function fmtNum(x, digits=0) {
   if (x === null || x === undefined || isNaN(x)) return "-";
   return Number(x).toLocaleString(undefined, {maximumFractionDigits: digits});
 }
+function krCount(x) {
+  if (x === null || x === undefined || isNaN(x)) return "-";
+  x = Math.round(Math.abs(x));
+  const eok = Math.floor(x / 1e8);
+  const man = Math.floor((x % 1e8) / 1e4);
+  const rest = x % 1e4;
+  const parts = [];
+  if (eok) parts.push(eok.toLocaleString() + "억");
+  if (man) parts.push(man.toLocaleString() + "만");
+  if (!parts.length) parts.push(rest.toLocaleString());
+  return parts.join(" ");
+}
 function fmtMoney(x) {
   if (x === null || x === undefined || isNaN(x)) return "-";
-  if (x >= 1e9) return "$" + (x/1e9).toFixed(2) + "B";
-  if (x >= 1e6) return "$" + (x/1e6).toFixed(1) + "M";
-  return "$" + fmtNum(x);
+  return krCount(x) + " 달러";
 }
 function scoreClass(s) {
   if (s >= 60) return "score-hot";
@@ -142,7 +152,14 @@ function render() {
   tbody.innerHTML = rows.slice(0, 500).map(r => {
     const chg = r.day_change_pct;
     const chgCls = chg > 0 ? "pos" : (chg < 0 ? "neg" : "");
-    const reasons = (r.reasons || []).map(x => `<div>• ${x}</div>`).join("");
+    const otherReasons = (r.reasons || []).filter(x => !x.startsWith("뉴스")).map(x => `<div>• ${x}</div>`).join("");
+    const newsHtml = (r.news || []).slice(0, 3).map(a => {
+      const p = a.catalyst_prob;
+      const cls = p >= 70 ? "score-hot" : p >= 55 ? "score-warm" : p >= 40 ? "score-mild" : "";
+      const link = a.link ? `<a href="${a.link}" target="_blank" style="color:inherit;text-decoration:underline">${a.title}</a>` : a.title;
+      return `<div>· <span class="score-pill ${cls}">${a.catalyst_label} ${p}%</span> ${link}</div>`;
+    }).join("");
+    const reasons = newsHtml + otherReasons;
     return `<tr>
       <td class="sym"><a href="https://finance.yahoo.com/quote/${r.symbol}" target="_blank">${r.symbol}</a></td>
       <td>${r.name || ""}</td>
@@ -150,7 +167,7 @@ function render() {
       <td>$${fmtNum(r.price, 4)}</td>
       <td class="${chgCls}">${chg !== null && chg !== undefined ? chg.toFixed(1)+"%" : "-"}</td>
       <td>${r.volume_ratio ? r.volume_ratio.toFixed(1)+"x" : "-"}</td>
-      <td>${r.float_shares ? fmtNum(r.float_shares/1e6,1)+"M" : "-"}</td>
+      <td>${r.float_shares ? krCount(r.float_shares)+"주" : "-"}</td>
       <td>${fmtMoney(r.market_cap)}</td>
       <td><span class="score-pill ${scoreClass(r.score)}">${r.score}</span></td>
       <td class="reasons">${reasons}</td>

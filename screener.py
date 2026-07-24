@@ -35,6 +35,21 @@ KEYWORD_KR = {
 }
 
 
+def kr_count(n):
+    """Format a large count using Korean 억/만 units, e.g. 142_000_000 -> '1억 4,200만'."""
+    n = int(round(abs(n)))
+    eok, rem = divmod(n, 100_000_000)
+    man, rest = divmod(rem, 10_000)
+    parts = []
+    if eok:
+        parts.append(f"{eok}억")
+    if man:
+        parts.append(f"{man:,}만")
+    if not parts:
+        parts.append(f"{rest:,}")
+    return " ".join(parts)
+
+
 def build_shortlist(df: pd.DataFrame, sec_hits: dict) -> list:
     cond = (
         df["symbol"].isin(sec_hits.keys())
@@ -58,8 +73,13 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
 
     news_articles = news_hits.get(row["symbol"])
     if news_articles:
-        score += 25 + min(10, 3 * (len(news_articles) - 1))
-        reasons.append(f"뉴스: \"{news_articles[0]['title']}\"")
+        best_prob = max(a["catalyst_prob"] for a in news_articles)
+        add = (best_prob - 50) * 0.7
+        if best_prob >= 55:
+            add += min(8, 2 * (len(news_articles) - 1))
+        score += add
+        for a in news_articles[:2]:
+            reasons.append(f"뉴스 ({a['catalyst_label']} {a['catalyst_prob']}%): \"{a['title']}\"")
 
     ratio = row.get("volume_ratio")
     if pd.notna(ratio) and ratio and ratio >= 1.5:
@@ -78,17 +98,17 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
     if float_shares:
         if float_shares < 5_000_000:
             score += 15
-            reasons.append(f"매우 낮은 유통주식수 ({float_shares/1e6:.1f}M주)")
+            reasons.append(f"매우 낮은 유통주식수 ({kr_count(float_shares)}주)")
         elif float_shares < 20_000_000:
             score += 8
-            reasons.append(f"낮은 유통주식수 ({float_shares/1e6:.1f}M주)")
+            reasons.append(f"낮은 유통주식수 ({kr_count(float_shares)}주)")
 
     mcap = row.get("market_cap")
     if score > 0 and pd.notna(mcap) and mcap and mcap < 50_000_000:
         score += 5
-        reasons.append("초소형주 (시가총액 $50M 미만)")
+        reasons.append("초소형주 (시가총액 5,000만 달러 미만)")
 
-    return round(score, 1), reasons
+    return round(max(0.0, score), 1), reasons
 
 
 def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", prefix="results"):
@@ -124,6 +144,7 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     candidates["score"] = scores
     candidates["reasons"] = reasons_list
     candidates["float_shares"] = candidates["symbol"].map(lambda t: (float_info.get(t) or {}).get("float_shares"))
+    candidates["news"] = candidates["symbol"].map(lambda t: news_hits.get(t, []))
     candidates = candidates.sort_values("score", ascending=False).reset_index(drop=True)
 
     import os
