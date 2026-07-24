@@ -111,7 +111,22 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
     return round(max(0.0, score), 1), reasons
 
 
+def _load_previous_scored_symbols(out_dir, prefix):
+    """Read the previous run's output (if any) to detect newly-appeared candidates."""
+    import os
+    path = f"{out_dir}/{prefix}.json"
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            prev = json.load(f)
+        return {r["symbol"] for r in prev.get("results", []) if r.get("score", 0) > 0}
+    except (json.JSONDecodeError, KeyError, OSError):
+        return set()
+
+
 def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", prefix="results"):
+    previously_scored = _load_previous_scored_symbols(out_dir, prefix)
     print("[1/6] Fetching Nasdaq universe ...")
     uni = universe.fetch_nasdaq_universe()
     candidates = universe.filter_sub_dollar_smallcap(uni, max_price, max_market_cap)
@@ -145,6 +160,8 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     candidates["reasons"] = reasons_list
     candidates["float_shares"] = candidates["symbol"].map(lambda t: (float_info.get(t) or {}).get("float_shares"))
     candidates["news"] = candidates["symbol"].map(lambda t: news_hits.get(t, []))
+    candidates["is_new"] = candidates.apply(
+        lambda r: bool(r["score"] > 0 and r["symbol"] not in previously_scored), axis=1)
     candidates = candidates.sort_values("score", ascending=False).reset_index(drop=True)
 
     import os

@@ -161,7 +161,7 @@ function render() {
     }).join("");
     const reasons = newsHtml + otherReasons;
     return `<tr>
-      <td class="sym"><a href="https://finance.yahoo.com/quote/${r.symbol}" target="_blank">${r.symbol}</a></td>
+      <td class="sym"><a href="https://finance.yahoo.com/quote/${r.symbol}" target="_blank">${r.symbol}</a>${r.is_new ? ' <span class="tag" style="color:var(--hot);border-color:var(--hot)">NEW</span>' : ''}</td>
       <td>${r.name || ""}</td>
       <td><span class="tag">${r.security_type || ""}</span></td>
       <td>$${fmtNum(r.price, 4)}</td>
