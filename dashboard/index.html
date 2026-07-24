@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Nasdaq 저가/소형주 합병 급등 스크리너</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e6e8ec;
+    --muted: #8b90a0; --accent: #4f8cff; --good: #2ecc71; --warn: #f5a623; --hot: #ff4d4f;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f6f8; --panel:#ffffff; --border:#dfe2e8; --text:#1a1d24; --muted:#5b6070; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, "Malgun Gothic", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { padding: 20px 24px 8px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .controls { display:flex; flex-wrap: wrap; gap: 10px; padding: 14px 24px; align-items: center;
+              background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top:0; z-index: 5;}
+  .controls input, .controls select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+              border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  .controls label { font-size: 12px; color: var(--muted); display:flex; flex-direction:column; gap:4px; }
+  .stat { font-size: 12px; color: var(--muted); margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { position: sticky; top: 61px; background: var(--panel); text-align: left; padding: 10px 12px;
+             border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap; color: var(--muted); }
+  thead th:hover { color: var(--text); }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr:hover { background: rgba(79,140,255,0.06); }
+  .sym { font-weight: 700; }
+  .sym a { color: var(--accent); text-decoration: none; }
+  .pos { color: var(--good); } .neg { color: var(--hot); }
+  .score-pill { display:inline-block; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 12px; }
+  .score-hot { background: rgba(255,77,79,0.15); color: var(--hot); }
+  .score-warm { background: rgba(245,166,35,0.15); color: var(--warn); }
+  .score-mild { background: rgba(79,140,255,0.15); color: var(--accent); }
+  .reasons { color: var(--muted); font-size: 12px; max-width: 360px; }
+  .reasons div { margin-bottom: 2px; }
+  .tag { display:inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); margin-left:6px;}
+  .empty { padding: 40px; text-align:center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nasdaq 저가·소형주 합병/급등 촉매 스크리너</h1>
+  <div class="sub" id="meta">불러오는 중...</div>
+</header>
+<div class="controls">
+  <label>검색
+    <input id="q" type="text" placeholder="티커 또는 종목명" />
+  </label>
+  <label>최소 점수
+    <input id="minScore" type="number" value="0" min="0" step="5" style="width:80px" />
+  </label>
+  <label>증권 유형
+    <select id="secType">
+      <option value="">전체</option>
+      <option value="Common">Common (보통주)</option>
+      <option value="Warrant">Warrant</option>
+      <option value="Right">Right</option>
+      <option value="Unit">Unit</option>
+      <option value="ADS/ADR">ADS/ADR</option>
+      <option value="Preferred">Preferred</option>
+    </select>
+  </label>
+  <label>신호만 보기
+    <select id="onlyHits">
+      <option value="0">전체</option>
+      <option value="1" selected>점수 &gt; 0</option>
+    </select>
+  </label>
+  <span class="stat" id="stat"></span>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th data-k="symbol">심볼</th>
+      <th data-k="name">종목명</th>
+      <th data-k="security_type">유형</th>
+      <th data-k="price">가격</th>
+      <th data-k="day_change_pct">일변동</th>
+      <th data-k="volume_ratio">거래량배수</th>
+      <th data-k="float_shares">유통주식수</th>
+      <th data-k="market_cap">시가총액</th>
+      <th data-k="score">점수</th>
+      <th>촉매 근거</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="empty" id="emptyMsg" style="display:none">조건에 맞는 종목이 없습니다.</div>
+
+<script>
+let DATA = [];
+let sortKey = "score", sortDir = -1;
+
+function fmtNum(x, digits=0) {
+  if (x === null || x === undefined || isNaN(x)) return "-";
+  return Number(x).toLocaleString(undefined, {maximumFractionDigits: digits});
+}
+function fmtMoney(x) {
+  if (x === null || x === undefined || isNaN(x)) return "-";
+  if (x >= 1e9) return "$" + (x/1e9).toFixed(2) + "B";
+  if (x >= 1e6) return "$" + (x/1e6).toFixed(1) + "M";
+  return "$" + fmtNum(x);
+}
+function scoreClass(s) {
+  if (s >= 60) return "score-hot";
+  if (s >= 30) return "score-warm";
+  if (s > 0) return "score-mild";
+  return "";
+}
+
+function render() {
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const minScore = parseFloat(document.getElementById('minScore').value) || 0;
+  const secType = document.getElementById('secType').value;
+  const onlyHits = document.getElementById('onlyHits').value === "1";
+
+  let rows = DATA.filter(r => {
+    if (q && !(r.symbol.toLowerCase().includes(q) || (r.name||"").toLowerCase().includes(q))) return false;
+    if (secType && r.security_type !== secType) return false;
+    if (onlyHits && !(r.score > 0)) return false;
+    if (r.score < minScore) return false;
+    return true;
+  });
+
+  rows.sort((a,b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (va === null || va === undefined) va = -Infinity;
+    if (vb === null || vb === undefined) vb = -Infinity;
+    if (typeof va === "string") return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+
+  document.getElementById('stat').textContent = `${rows.length} / ${DATA.length} 종목`;
+  document.getElementById('emptyMsg').style.display = rows.length ? "none" : "block";
+
+  const tbody = document.getElementById('rows');
+  tbody.innerHTML = rows.slice(0, 500).map(r => {
+    const chg = r.day_change_pct;
+    const chgCls = chg > 0 ? "pos" : (chg < 0 ? "neg" : "");
+    const reasons = (r.reasons || []).map(x => `<div>• ${x}</div>`).join("");
+    return `<tr>
+      <td class="sym"><a href="https://finance.yahoo.com/quote/${r.symbol}" target="_blank">${r.symbol}</a></td>
+      <td>${r.name || ""}</td>
+      <td><span class="tag">${r.security_type || ""}</span></td>
+      <td>$${fmtNum(r.price, 4)}</td>
+      <td class="${chgCls}">${chg !== null && chg !== undefined ? chg.toFixed(1)+"%" : "-"}</td>
+      <td>${r.volume_ratio ? r.volume_ratio.toFixed(1)+"x" : "-"}</td>
+      <td>${r.float_shares ? fmtNum(r.float_shares/1e6,1)+"M" : "-"}</td>
+      <td>${fmtMoney(r.market_cap)}</td>
+      <td><span class="score-pill ${scoreClass(r.score)}">${r.score}</span></td>
+      <td class="reasons">${reasons}</td>
+    </tr>`;
+  }).join("");
+}
+
+document.querySelectorAll('thead th[data-k]').forEach(th => {
+  th.addEventListener('click', () => {
+    const k = th.dataset.k;
+    if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = -1; }
+    render();
+  });
+});
+['q','minScore','secType','onlyHits'].forEach(id =>
+  document.getElementById(id).addEventListener('input', render));
+
+fetch('../data/results.json').then(r => r.json()).then(payload => {
+  DATA = payload.results;
+  document.getElementById('meta').textContent =
+    `생성 시각: ${payload.generated_at} · 전체 나스닥 ${payload.total_universe}종목 중 $${payload.filters.max_price} 미만 소형주 ${payload.total_candidates}종목`;
+  render();
+}).catch(err => {
+  document.getElementById('meta').textContent = 'data/results.json 로드 실패: ' + err;
+});
+</script>
+</body>
+</html>
