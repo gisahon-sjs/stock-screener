@@ -1,5 +1,3 @@
 __pycache__/
 *.pyc
 rerun*.log
-data/*.json
-data/*.csv
