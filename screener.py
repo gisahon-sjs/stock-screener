@@ -104,6 +104,14 @@ def score_row(row, sec_hits, news_hits, float_info) -> tuple:
         score += add
         reasons.append(f"당일 변동률 {day_chg:+.1f}%")
 
+    reversal = row.get("bottom_reversal")
+    if isinstance(reversal, dict):
+        add = min(30, 10 + reversal["breakout_pct"] * 0.5)
+        score += add
+        reasons.append(
+            f"26주 바닥권({reversal['range_pos_pct']:.0f}% 지점) 횡보 후 상승 전환 "
+            f"(저점 대비 +{reversal['breakout_pct']:.1f}%, {reversal['days_since_trough']}일 전 저점)")
+
     finfo = float_info.get(row["symbol"])
     float_shares = finfo.get("float_shares") if finfo else None
     if float_shares:
@@ -220,6 +228,8 @@ def run(max_price=MAX_PRICE, max_market_cap=MAX_MARKET_CAP, out_dir="data", pref
     candidates["reasons"] = reasons_list
     candidates["float_shares"] = candidates["symbol"].map(lambda t: (float_info.get(t) or {}).get("float_shares"))
     candidates["news"] = candidates["symbol"].map(lambda t: news_hits.get(t, []))
+    candidates["reversal_pct"] = candidates["bottom_reversal"].map(
+        lambda r: r["breakout_pct"] if isinstance(r, dict) else None)
     candidates["is_new"] = candidates.apply(
         lambda r: bool(r["score"] > 0 and r["symbol"] not in previously_scored), axis=1)
 

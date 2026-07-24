@@ -1,6 +1,9 @@
 """Regression tests for the scoring/classification logic. Run: python test_screener.py"""
 import unittest
 
+import pandas as pd
+
+import market_signals
 import news_signals
 import screener
 
@@ -71,6 +74,27 @@ class TestScoreRow(unittest.TestCase):
         self.assertGreaterEqual(score, 40)
         self.assertTrue(any("SEC 공시" in r for r in reasons))
 
+    def test_bottom_reversal_scores_positive(self):
+        row = self._row(bottom_reversal={
+            "range_pos_pct": 12.0, "days_since_trough": 20, "base_days": 25,
+            "breakout_pct": 15.0, "low_26w": 0.2, "high_26w": 0.9,
+        })
+        score, reasons = screener.score_row(row, {}, {}, {})
+        self.assertGreater(score, 0)
+        self.assertTrue(any("26주 바닥권" in r for r in reasons))
+
+    def test_no_bottom_reversal_key_does_not_crash(self):
+        row = self._row()  # no 'bottom_reversal' key at all
+        score, _ = screener.score_row(row, {}, {}, {})
+        self.assertEqual(score, 0.0)
+
+    def test_nan_bottom_reversal_does_not_crash(self):
+        # Regression: pandas left-merge fills unmatched rows with NaN (a float),
+        # and `if reversal:` treated that truthy NaN as a real dict -> crash.
+        row = self._row(bottom_reversal=float("nan"))
+        score, _ = screener.score_row(row, {}, {}, {})
+        self.assertEqual(score, 0.0)
+
     def test_sec_item_2_01_scores_higher_than_no_item(self):
         base = {"keyword": "reverse merger", "form": "8-K", "file_date": "2026-01-01"}
         sec_hits_plain = {"TEST": [dict(base)]}
@@ -107,6 +131,33 @@ class TestScoreRow(unittest.TestCase):
                                 "catalyst_prob": 5, "catalyst_label": "악재 가능성", "link": None}]}
         score, _ = screener.score_row(self._row(), {}, news_hits, {})
         self.assertGreaterEqual(score, 0.0)
+
+
+class TestBottomReversal(unittest.TestCase):
+    def test_decline_base_breakout_detected(self):
+        decline = pd.Series([10 - i * 0.08 for i in range(100)])  # 10 -> ~2
+        sideways = pd.Series([2 + 0.10 * ((i % 4) - 1.5) for i in range(40)])
+        breakout = pd.Series([2.2, 2.35, 2.5, 2.6, 2.7])
+        closes = pd.concat([decline, sideways, breakout], ignore_index=True)
+        result = market_signals.detect_bottom_reversal(closes)
+        self.assertIsNotNone(result)
+        self.assertLessEqual(result["range_pos_pct"], 25)
+        self.assertGreater(result["breakout_pct"], 0)
+
+    def test_pure_decline_not_detected(self):
+        closes = pd.Series([10 - i * 0.05 for i in range(150)])
+        self.assertIsNone(market_signals.detect_bottom_reversal(closes))
+
+    def test_near_high_not_detected(self):
+        rise = pd.Series([2 + i * 0.08 for i in range(100)])
+        sideways = pd.Series([10 + 0.1 * ((i % 4) - 1.5) for i in range(40)])
+        recent = pd.Series([9.5, 9.8, 10.1, 10.3, 10.5])
+        closes = pd.concat([rise, sideways, recent], ignore_index=True)
+        self.assertIsNone(market_signals.detect_bottom_reversal(closes))
+
+    def test_insufficient_history_returns_none(self):
+        closes = pd.Series([1.0, 1.1, 1.2, 0.9])
+        self.assertIsNone(market_signals.detect_bottom_reversal(closes))
 
 
 class TestKrCount(unittest.TestCase):

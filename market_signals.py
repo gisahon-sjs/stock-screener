@@ -13,8 +13,62 @@ def _chunk(seq, size):
         yield seq[i:i + size]
 
 
-def bulk_volume_signals(tickers, chunk_size=100, period="2mo", pause=1.0, progress=True):
-    """Return {ticker: {last_close, last_volume, avg_volume_20d, volume_ratio, day_change_pct}}"""
+def detect_bottom_reversal(closes, near_low_pct=0.25, sideways_cv=0.20, breakout_pct=5.0,
+                            min_base_days=15, max_trough_age_days=182):
+    """Heuristic: 26-week-range low -> sideways base -> recent upward breakout.
+
+    closes: pandas Series of daily closes, oldest first, ideally ~6mo of history.
+    Returns a dict describing the pattern, or None if it doesn't apply / not enough data.
+    """
+    closes = closes.dropna()
+    if len(closes) < min_base_days + 15:
+        return None
+
+    low_26w, high_26w = float(closes.min()), float(closes.max())
+    current = float(closes.iloc[-1])
+    if high_26w <= low_26w:
+        return None
+    range_pos = (current - low_26w) / (high_26w - low_26w)
+
+    trough_idx = int(closes.values.argmin())
+    days_since_trough = len(closes) - 1 - trough_idx
+    # Trough must be recent-ish (so this is "basing", not ancient history) and
+    # have had enough days since to actually form a base + reversal.
+    if days_since_trough < min_base_days or days_since_trough > max_trough_age_days:
+        return None
+
+    post_trough = closes.iloc[trough_idx:]
+    if len(post_trough) < min_base_days + 5:
+        return None
+
+    recent = post_trough.iloc[-5:]
+    base = post_trough.iloc[:-5]
+    if len(base) < min_base_days:
+        return None
+
+    base_mean = float(base.mean())
+    base_cv = float((base.max() - base.min()) / base_mean) if base_mean else 1.0
+    is_sideways = base_cv <= sideways_cv
+
+    breakout = (current / base_mean - 1) * 100 if base_mean else 0.0
+    is_breaking_out = breakout >= breakout_pct and current > float(recent.iloc[0])
+    is_near_low = range_pos <= near_low_pct
+
+    if not (is_near_low and is_sideways and is_breaking_out):
+        return None
+
+    return {
+        "range_pos_pct": round(range_pos * 100, 1),
+        "days_since_trough": days_since_trough,
+        "base_days": len(base),
+        "breakout_pct": round(breakout, 1),
+        "low_26w": low_26w,
+        "high_26w": high_26w,
+    }
+
+
+def bulk_volume_signals(tickers, chunk_size=100, period="6mo", pause=1.0, progress=True):
+    """Return {ticker: {last_close, last_volume, avg_volume_20d, volume_ratio, day_change_pct, bottom_reversal}}"""
     results = {}
     chunks = list(_chunk(sorted(set(tickers)), chunk_size))
     for i, batch in enumerate(chunks):
@@ -44,6 +98,7 @@ def bulk_volume_signals(tickers, chunk_size=100, period="2mo", pause=1.0, progre
                     "avg_volume_20d": avg_volume,
                     "volume_ratio": ratio,
                     "day_change_pct": day_change_pct,
+                    "bottom_reversal": detect_bottom_reversal(df["Close"]),
                 }
             except (KeyError, IndexError, ValueError):
                 continue

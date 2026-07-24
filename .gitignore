@@ -6,3 +6,4 @@ data/live_results.csv
 data/history_live_results.json
 data/backtest_*.json
 telegram_config.json
+webhook_config.json
