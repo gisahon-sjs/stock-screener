@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 rerun*.log
+pull_latest.log
+live_scan.log
+data/live_results.json
+data/live_results.csv

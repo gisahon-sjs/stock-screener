@@ -44,7 +44,7 @@
 </head>
 <body>
 <header>
-  <h1>Nasdaq 저가·소형주 합병/급등 촉매 스크리너</h1>
+  <h1>Nasdaq 저가·소형주 합병/급등 촉매 스크리너 <span id="liveBadge" class="tag" style="display:none"></span></h1>
   <div class="sub" id="meta">불러오는 중...</div>
 </header>
 <div class="controls">
@@ -85,7 +85,7 @@
       <th data-k="float_shares">유통주식수</th>
       <th data-k="market_cap">시가총액</th>
       <th data-k="score">점수</th>
-      <th>촉매 근거</th>
+      <th>뉴스</th>
     </tr>
   </thead>
   <tbody id="rows"></tbody>
@@ -168,14 +168,53 @@ document.querySelectorAll('thead th[data-k]').forEach(th => {
 ['q','minScore','secType','onlyHits'].forEach(id =>
   document.getElementById(id).addEventListener('input', render));
 
-fetch('../data/results.json').then(r => r.json()).then(payload => {
+let lastGeneratedAt = null;
+const REFRESH_MS = 30000;
+
+async function fetchJson(path) {
+  const res = await fetch(`${path}?t=${Date.now()}`, {cache: 'no-store'});
+  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  return res.json();
+}
+
+async function loadLatest(isPoll) {
+  let payload, isLive;
+  try {
+    payload = await fetchJson('../data/live_results.json');
+    isLive = true;
+  } catch (e) {
+    try {
+      payload = await fetchJson('../data/results.json');
+      isLive = false;
+    } catch (e2) {
+      if (!isPoll) document.getElementById('meta').textContent = '데이터 로드 실패: ' + e2;
+      return;
+    }
+  }
+
+  const badge = document.getElementById('liveBadge');
+  if (isLive) {
+    badge.style.display = 'inline-block';
+    badge.textContent = '실시간(장중)';
+    badge.style.color = 'var(--good)';
+    badge.style.borderColor = 'var(--good)';
+  } else {
+    badge.style.display = 'inline-block';
+    badge.textContent = '일간(클라우드)';
+    badge.style.color = 'var(--muted)';
+  }
+
+  if (payload.generated_at === lastGeneratedAt) return; // no new data, skip re-render
+  lastGeneratedAt = payload.generated_at;
+
   DATA = payload.results;
   document.getElementById('meta').textContent =
-    `생성 시각: ${payload.generated_at} · 전체 나스닥 ${payload.total_universe}종목 중 $${payload.filters.max_price} 미만 소형주 ${payload.total_candidates}종목`;
+    `생성 시각: ${payload.generated_at} · 전체 나스닥 ${payload.total_universe}종목 중 $${payload.filters.max_price} 미만 소형주 ${payload.total_candidates}종목 · ${REFRESH_MS/1000}초마다 자동 갱신`;
   render();
-}).catch(err => {
-  document.getElementById('meta').textContent = 'data/results.json 로드 실패: ' + err;
-});
+}
+
+loadLatest(false);
+setInterval(() => loadLatest(true), REFRESH_MS);
 </script>
 </body>
 </html>
